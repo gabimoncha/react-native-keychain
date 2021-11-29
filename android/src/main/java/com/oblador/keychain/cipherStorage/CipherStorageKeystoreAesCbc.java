@@ -195,6 +195,8 @@ public class CipherStorageKeystoreAesCbc extends CipherStorageBase {
       .setBlockModes(BLOCK_MODE_CBC)
       .setEncryptionPaddings(PADDING_PKCS7)
       .setRandomizedEncryptionRequired(true)
+      .setUserAuthenticationRequired(false)
+      .setUserAuthenticationValidityDurationSeconds(1)
       .setKeySize(ENCRYPTION_KEY_SIZE);
   }
 

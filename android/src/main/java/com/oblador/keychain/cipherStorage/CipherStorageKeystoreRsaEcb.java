@@ -69,7 +69,7 @@ public class CipherStorageKeystoreRsaEcb extends CipherStorageBase {
     final String safeAlias = getDefaultAliasIfEmpty(alias, getDefaultAliasServiceName());
 
     try {
-      return innerEncryptedCredentials(safeAlias, password, username, level);
+      return innerEncryptedCredentials(safeAlias, password, username, level, true);
 
       // KeyStoreException | KeyStoreAccessException  | NoSuchAlgorithmException | InvalidKeySpecException |
       //    IOException | NoSuchPaddingException | InvalidKeyException e
@@ -121,18 +121,31 @@ public class CipherStorageKeystoreRsaEcb extends CipherStorageBase {
 
     Key key = null;
 
+//    try {
+//      // key is always NOT NULL otherwise GeneralSecurityException raised
+//      key = extractGeneratedKey(safeAlias, level, retries);
+//
+//      final DecryptionResult results = new DecryptionResult(
+//        decryptBytes(key, username),
+//        decryptBytes(key, password)
+//      );
+//
+//      handler.onDecrypt(results, null);
+//    } catch (final UserNotAuthenticatedException ex) {
+//      Log.d(LOG_TAG, "Unlock of keystore is needed. Error: " + ex.getMessage(), ex);
+//
+//      // expected that KEY instance is extracted and we caught exception on decryptBytes operation
+//      @SuppressWarnings("ConstantConditions") final DecryptionContext context =
+//        new DecryptionContext(safeAlias, key, password, username);
+//
+//      handler.askAccessPermissions(context);
+//    } catch (final Throwable fail) {
+//      // any other exception treated as a failure
+//      handler.onDecrypt(null, fail);
+//    }
     try {
-      // key is always NOT NULL otherwise GeneralSecurityException raised
       key = extractGeneratedKey(safeAlias, level, retries);
-
-      final DecryptionResult results = new DecryptionResult(
-        decryptBytes(key, username),
-        decryptBytes(key, password)
-      );
-
-      handler.onDecrypt(results, null);
-    } catch (final UserNotAuthenticatedException ex) {
-      Log.d(LOG_TAG, "Unlock of keystore is needed. Error: " + ex.getMessage(), ex);
+      // Log.d(LOG_TAG, "Unlock of keystore is needed. Error: " + ex.getMessage(), ex);
 
       // expected that KEY instance is extracted and we caught exception on decryptBytes operation
       @SuppressWarnings("ConstantConditions") final DecryptionContext context =
@@ -189,7 +202,8 @@ public class CipherStorageKeystoreRsaEcb extends CipherStorageBase {
   private EncryptionResult innerEncryptedCredentials(@NonNull final String alias,
                                                      @NonNull final String password,
                                                      @NonNull final String username,
-                                                     @NonNull final SecurityLevel level)
+                                                     @NonNull final SecurityLevel level,
+                                                     @NonNull final Boolean retry)
     throws GeneralSecurityException, IOException {
 
     final KeyStore store = getKeyStoreAndLoad();
@@ -201,6 +215,10 @@ public class CipherStorageKeystoreRsaEcb extends CipherStorageBase {
 
     final KeyFactory kf = KeyFactory.getInstance(ALGORITHM_RSA);
     final Certificate certificate = store.getCertificate(alias);
+    if (certificate == null && retry) {
+      store.deleteEntry(alias);
+      return innerEncryptedCredentials(alias, password, username, level, false);
+    }
     final PublicKey publicKey = certificate.getPublicKey();
     final X509EncodedKeySpec keySpec = new X509EncodedKeySpec(publicKey.getEncoded());
     final PublicKey key = kf.generatePublic(keySpec);
@@ -238,7 +256,7 @@ public class CipherStorageKeystoreRsaEcb extends CipherStorageBase {
       .setEncryptionPaddings(PADDING_PKCS1)
       .setRandomizedEncryptionRequired(true)
       .setUserAuthenticationRequired(true)
-      .setUserAuthenticationValidityDurationSeconds(5)
+      .setUserAuthenticationValidityDurationSeconds(60)
       .setKeySize(keySize);
   }
 

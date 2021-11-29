@@ -1,6 +1,8 @@
 package com.oblador.keychain;
 
+import android.content.Context;
 import android.os.Build;
+import android.os.Bundle;
 import android.text.TextUtils;
 import android.util.Log;
 
@@ -9,6 +11,10 @@ import androidx.annotation.Nullable;
 import androidx.annotation.StringDef;
 import androidx.biometric.BiometricManager;
 import androidx.biometric.BiometricPrompt.PromptInfo;
+import android.security.keystore.UserNotAuthenticatedException;
+
+import com.facebook.react.bridge.ActivityEventListener;
+import com.facebook.react.bridge.BaseActivityEventListener;
 
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.Promise;
@@ -40,6 +46,9 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import javax.crypto.Cipher;
+import android.app.Activity;
+import android.app.KeyguardManager;
+import android.content.Intent;
 
 import static com.facebook.react.bridge.Arguments.makeNativeArray;
 
@@ -52,8 +61,24 @@ public class KeychainModule extends ReactContextBaseJavaModule {
   public static final String IRIS_SUPPORTED_NAME = "Iris";
   public static final String EMPTY_STRING = "";
   public static final String WARMING_UP_ALIAS = "warmingUp";
+  public static final String E_CRYPTO_FAILED = "E_CRYPTO_FAILED";
+  public static final String E_USER_AUTH_FAILED = "E_USER_DIDNT_AUTH";
 
   private static final String LOG_TAG = KeychainModule.class.getSimpleName();
+
+  private final KeyguardManager mKeyguardManager;
+  final ReactApplicationContext mReactContext;
+
+  private String mUsername;
+  private String mPassword;
+  private Promise mPromise;
+  private ReadableMap mOptions;
+  private String mCurrentAction;
+
+  public static final String AUTH_PROMPT_TITLE_KEY = "authenticationPromptTitle";
+  public static final String AUTH_PROMPT_DESC_KEY = "authenticationPromptDesc";
+
+  private static final int REQUEST_CODE_CONFIRM_DEVICE_CREDENTIALS = 42;
 
   @StringDef({AccessControl.NONE
     , AccessControl.USER_PRESENCE
@@ -138,7 +163,10 @@ public class KeychainModule extends ReactContextBaseJavaModule {
   /** Default constructor. */
   public KeychainModule(@NonNull final ReactApplicationContext reactContext) {
     super(reactContext);
+    mReactContext = reactContext;
     prefsStorage = new PrefsStorage(reactContext);
+
+    mKeyguardManager = (KeyguardManager) mReactContext.getSystemService(Context.KEYGUARD_SERVICE);
 
     addCipherStorageToMap(new CipherStorageFacebookConceal(reactContext));
     addCipherStorageToMap(new CipherStorageKeystoreAesCbc());
@@ -147,6 +175,8 @@ public class KeychainModule extends ReactContextBaseJavaModule {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
       addCipherStorageToMap(new CipherStorageKeystoreRsaEcb());
     }
+
+    reactContext.addActivityEventListener(mActivityEventListener);
   }
 
   /** Allow initialization in chain. */
@@ -182,6 +212,52 @@ public class KeychainModule extends ReactContextBaseJavaModule {
     }
   }
   //endregion
+
+  private final ActivityEventListener mActivityEventListener = new BaseActivityEventListener() {
+    @Override
+    public void onActivityResult(Activity activity, int requestCode, int resultCode, Intent intent) {
+      if (requestCode == REQUEST_CODE_CONFIRM_DEVICE_CREDENTIALS) {
+        // Challenge completed, proceed with using cipher
+        if (resultCode == Activity.RESULT_OK) {
+          if (mCurrentAction == "set") {
+            setGenericPasswordForOptions(mOptions, mUsername, mPassword, mPromise);
+          } else {
+            getGenericPasswordForOptions(mOptions, mPromise);
+          }
+        } else {
+          // The user canceled or didn’t complete the lock screen
+          // operation. Go to error/cancellation flow.
+          mPromise.reject(E_USER_AUTH_FAILED, new Exception("Error: Cancel"));
+        }
+      }
+      mCurrentAction = null;
+      mOptions = null;
+      mUsername = null;
+      mPassword = null;
+    }
+  };
+
+  public void handleUserNotAuthenticatedException(Promise promise) {
+    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+      String authPromptTitle = null;
+      String authPromptDesc = null;
+      if (mOptions != null) {
+        if (mOptions.hasKey(AUTH_PROMPT_TITLE_KEY)) {
+          authPromptTitle = mOptions.getString(AUTH_PROMPT_TITLE_KEY);
+        }
+        if (mOptions.hasKey(AUTH_PROMPT_DESC_KEY)) {
+          authPromptDesc = mOptions.getString(AUTH_PROMPT_DESC_KEY);
+        }
+      }
+      Intent intent = mKeyguardManager.createConfirmDeviceCredentialIntent(authPromptTitle, authPromptDesc);
+      if (intent != null) {
+        Activity currentActivity = getCurrentActivity();
+        currentActivity.startActivityForResult(intent, REQUEST_CODE_CONFIRM_DEVICE_CREDENTIALS);
+      }
+    } else {
+      promise.reject(E_CRYPTO_FAILED, new Exception("no pin supported"));
+    }
+  }
 
   //region Overrides
 
@@ -233,9 +309,22 @@ public class KeychainModule extends ReactContextBaseJavaModule {
 
       promise.reject(Errors.E_EMPTY_PARAMETERS, e);
     } catch (CryptoFailedException e) {
-      Log.e(KEYCHAIN_MODULE, e.getMessage(), e);
-
-      promise.reject(Errors.E_CRYPTO_FAILED, e);
+      if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+        if (e.getCause() != null && "User not authenticated".equals(e.getCause().getMessage())) {
+          mPromise = promise;
+          mUsername = username;
+          mPassword = password;
+          mOptions = options;
+          mCurrentAction = "set";
+          this.handleUserNotAuthenticatedException(promise);
+        } else {
+          Log.e(KEYCHAIN_MODULE, e.getMessage());
+          promise.reject(E_CRYPTO_FAILED, e);
+        }
+      } else {
+        Log.e(KEYCHAIN_MODULE, e.getMessage());
+        promise.reject(E_CRYPTO_FAILED, e);
+      }
     } catch (Throwable fail) {
       Log.e(KEYCHAIN_MODULE, fail.getMessage(), fail);
 
@@ -317,9 +406,20 @@ public class KeychainModule extends ReactContextBaseJavaModule {
 
       promise.reject(Errors.E_KEYSTORE_ACCESS_ERROR, e);
     } catch (CryptoFailedException e) {
-      Log.e(KEYCHAIN_MODULE, e.getMessage());
-
-      promise.reject(Errors.E_CRYPTO_FAILED, e);
+      if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+        if (e.getCause() != null && "User not authenticated".equals(e.getCause().getMessage())) {
+          mOptions = options;
+          mPromise = promise;
+          mCurrentAction = "get";
+          this.handleUserNotAuthenticatedException(promise);
+        } else {
+          Log.e(KEYCHAIN_MODULE, e.getMessage());
+          promise.reject(E_CRYPTO_FAILED, e);
+        }
+      } else {
+        Log.e(KEYCHAIN_MODULE, e.getMessage());
+        promise.reject(E_CRYPTO_FAILED, e);
+      }
     } catch (Throwable fail) {
       Log.e(KEYCHAIN_MODULE, fail.getMessage(), fail);
 
