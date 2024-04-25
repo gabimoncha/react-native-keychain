@@ -383,7 +383,7 @@ public class KeychainModule extends ReactContextBaseJavaModule {
 
       // Only check for upgradable ciphers for FacebookConseal as that
       // is the only cipher that can be upgraded
-      if (rules.equals(Rules.AUTOMATIC_UPGRADE) && storageName.equals(KnownCiphers.FB)){
+      if (Rules.AUTOMATIC_UPGRADE.equals(rules) && KnownCiphers.FB.equals(storageName)){
         // get the best storage
         final String accessControl = getAccessControlOrDefault(options);
         final boolean useBiometry = getUseBiometry(accessControl);
@@ -451,7 +451,7 @@ public class KeychainModule extends ReactContextBaseJavaModule {
     for (CipherStorage cipher : ciphers) {
       Set<String> aliases = cipher.getAllKeys();
       for (String alias : aliases) {
-          if (!alias.equals(WARMING_UP_ALIAS)) {
+          if (!WARMING_UP_ALIAS.equals(alias)) {
               result.add(alias);
           }
       }
